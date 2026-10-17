@@ -37,3 +37,7 @@ glslangValidator -V --target-env vulkan1.0 -o shaders/triangle.frag.spv shaders/
 ```
 
 Keep `shaders/triangle.metal` in sync with the GLSL shaders.
+
+## Current Output 
+<img width="960" height="522" alt="Screenshot 2026-10-17 at 16 11 10" src="https://github.com/user-attachments/assets/3377b74b-acf7-4507-b27e-053a3591609e" />
+

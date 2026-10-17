@@ -18,9 +18,9 @@ command. Close the window to exit.
 
 ## Rendering
 
-Uses SDL_GPU with Metal or Vulkan, falling back to SDL_Renderer if a GPU device
-cannot be created or attached to the window. The 2D fallback supports geometry
-at `z = 0`. There is no depth buffer or scene loading yet.
+Uses SDL_GPU with Metal or Vulkan and requires a compatible GPU and driver.
+Startup errors are reported to the terminal. There is no depth buffer or scene
+loading yet.
 
 Edit `SDLInterface::BuildGeometry()` in `sdl_interface.cpp` to change the scene.
 Coordinates run from -1 to 1, with positive y pointing up. The scene stretches

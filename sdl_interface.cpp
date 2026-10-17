@@ -5,6 +5,7 @@
 #include <limits>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace {
 bool ReportError(char const* operation) {
@@ -60,63 +61,25 @@ bool SDLInterface::OnInit() {
     window_ = SDL_CreateWindow("SDL Geometry", static_cast<int>(width_),
         static_cast<int>(height_), SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window_) return ReportError("Create window");
-    BuildGeometry();
 
-    if (CreateGPUDevice()) {
-        if (SDL_ClaimWindowForGPUDevice(device_, window_)) {
-            windowClaimed_ = true;
-            if (!SDL_SetGPUSwapchainParameters(device_, window_,
-                    SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC)) {
-                return ReportError("Configure GPU presentation");
-            }
-            if (!CreatePipeline() || !UploadGeometry()) return false;
-            ready_ = true;
-            std::cout << "Renderer: SDL_GPU / " << SDL_GetGPUDeviceDriver(device_)
-                      << std::endl;
-            return true;
-        }
-        ReportError("Claim GPU window");
-        SDL_DestroyGPUDevice(device_);
-        device_ = nullptr;
+    device_ = SDL_CreateGPUDevice(
+        SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
+    if (!device_) return ReportError("Create GPU device");
+    if (!SDL_ClaimWindowForGPUDevice(device_, window_)) {
+        return ReportError("Claim GPU window");
     }
-    std::cerr << "SDL_GPU unavailable; trying SDL's 2D renderer.\n";
-    SDL_ClearError();
+    windowClaimed_ = true;
+    if (!SDL_SetGPUSwapchainParameters(device_, window_,
+            SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC)) {
+        return ReportError("Configure GPU presentation");
+    }
 
-    ready_ = Init2DRenderer();
-    return ready_;
-}
-
-bool SDLInterface::CreateGPUDevice() {
-    SDL_PropertiesID props = SDL_CreateProperties();
-    if (!props) return ReportError("Create GPU properties");
-    bool valid = SDL_SetBooleanProperty(props,
-                     SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true) &&
-                 SDL_SetBooleanProperty(props,
-                     SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
-    valid = valid && SDL_SetBooleanProperty(props,
-        SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
-    // Request only features this renderer uses. Older SDL releases do not
-    // expose these optional-feature switches; their defaults still apply.
-#ifdef SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN
-    valid = valid && SDL_SetBooleanProperty(props,
-        SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
-#endif
-#ifdef SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN
-    valid = valid && SDL_SetBooleanProperty(props,
-        SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN, false);
-#endif
-#ifdef SDL_PROP_GPU_DEVICE_CREATE_FEATURE_INDIRECT_DRAW_FIRST_INSTANCE_BOOLEAN
-    valid = valid && SDL_SetBooleanProperty(props,
-        SDL_PROP_GPU_DEVICE_CREATE_FEATURE_INDIRECT_DRAW_FIRST_INSTANCE_BOOLEAN, false);
-#endif
-#ifdef SDL_PROP_GPU_DEVICE_CREATE_FEATURE_ANISOTROPY_BOOLEAN
-    valid = valid && SDL_SetBooleanProperty(props,
-        SDL_PROP_GPU_DEVICE_CREATE_FEATURE_ANISOTROPY_BOOLEAN, false);
-#endif
-    if (valid) device_ = SDL_CreateGPUDeviceWithProperties(props);
-    if (!valid || !device_) ReportError("Create GPU device");
-    SDL_DestroyProperties(props);
-    return device_ != nullptr;
+    BuildGeometry();
+    if (!CreatePipeline() || !UploadGeometry()) return false;
+    ready_ = true;
+    std::cout << "Renderer: SDL_GPU / " << SDL_GetGPUDeviceDriver(device_)
+              << std::endl;
+    return true;
 }
 
 bool SDLInterface::CreatePipeline() {
@@ -228,35 +191,6 @@ bool SDLInterface::UploadGeometry() {
     return submitted;
 }
 
-bool SDLInterface::Init2DRenderer() {
-    auto const& vertices = scene_.GetGeometry();
-    if (vertices.empty() || vertices.size() % 3 != 0 ||
-        vertices.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-        std::cerr << "Expected a nonempty triangle list for the 2D renderer.\n";
-        return false;
-    }
-    for (auto const& v : vertices) {
-        if (v.position_.z_ != 0.0f) {
-            std::cerr << "The 2D fallback supports z=0 geometry only.\n";
-            return false;
-        }
-    }
-    renderer_ = SDL_CreateRenderer(window_, nullptr);
-    if (!renderer_) return ReportError("Create 2D renderer");
-    if (!SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE)) {
-        return ReportError("Set 2D blend mode");
-    }
-    manualPacing_ = !SDL_SetRenderVSync(renderer_, 1);
-    if (manualPacing_) {
-        std::cerr << "2D vsync unavailable; using a 16 ms frame interval.\n";
-        SDL_ClearError();
-    }
-    vertices2D_.resize(vertices.size());
-    std::cout << "Renderer: SDL_Renderer / " << SDL_GetRendererName(renderer_)
-              << std::endl;
-    return true;
-}
-
 bool SDLInterface::Run() {
     if (!ready_) {
         std::cerr << "Renderer is not ready.\n";
@@ -264,26 +198,18 @@ bool SDLInterface::Run() {
     }
     bool running = true;
     while (running) {
-        const Uint64 frameStarted = SDL_GetTicks();
         ProcessInputEvents(running);
         if (!running) break;
         const FrameResult result = Render();
         if (result == FrameResult::Failed) return false;
-        // Avoid spinning while minimised, or on a renderer without vsync.
-        if (result == FrameResult::Skipped || manualPacing_) {
-            const Uint64 elapsed = SDL_GetTicks() - frameStarted;
-            if (elapsed < 16) SDL_Delay(static_cast<Uint32>(16 - elapsed));
-        }
+        // Vsync paces rendered frames; avoid spinning while minimised.
+        if (result == FrameResult::Skipped) SDL_Delay(16);
     }
     return true;
 }
 
 SDLInterface::FrameResult SDLInterface::Render() {
     if (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) return FrameResult::Skipped;
-    return device_ ? RenderGPU() : Render2D();
-}
-
-SDLInterface::FrameResult SDLInterface::RenderGPU() {
     SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(device_);
     if (!commands) {
         ReportError("Acquire frame command buffer");
@@ -330,38 +256,6 @@ SDLInterface::FrameResult SDLInterface::RenderGPU() {
     return FrameResult::Presented;
 }
 
-SDLInterface::FrameResult SDLInterface::Render2D() {
-    int width = 0, height = 0;
-    if (!SDL_GetRenderOutputSize(renderer_, &width, &height)) {
-        ReportError("Get render output size");
-        return FrameResult::Failed;
-    }
-    if (width <= 0 || height <= 0) return FrameResult::Skipped;
-    width_ = static_cast<uint32_t>(width);
-    height_ = static_cast<uint32_t>(height);
-    auto const& vertices = scene_.GetGeometry();
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        auto const& v = vertices[i];
-        // Match SDL_GPU's y-up normalised coordinates with SDL_Renderer's
-        // y-down pixel coordinates. Both paths stretch with the viewport.
-        vertices2D_[i] = {
-            {(v.position_.x_ + 1.0f) * 0.5f * width,
-             (1.0f - v.position_.y_) * 0.5f * height},
-            {v.colour_.x_, v.colour_.y_, v.colour_.z_, v.colour_.w_},
-            {0, 0}
-        };
-    }
-    if (!SDL_SetRenderDrawColor(renderer_, 240, 240, 240, 255) ||
-        !SDL_RenderClear(renderer_) ||
-        !SDL_RenderGeometry(renderer_, nullptr, vertices2D_.data(),
-                            static_cast<int>(vertices2D_.size()), nullptr, 0) ||
-        !SDL_RenderPresent(renderer_)) {
-        ReportError("Draw 2D frame");
-        return FrameResult::Failed;
-    }
-    return FrameResult::Presented;
-}
-
 void SDLInterface::ProcessInputEvents(bool& running) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -382,7 +276,6 @@ void SDLInterface::BuildGeometry() {
 }
 
 SDLInterface::~SDLInterface() {
-    if (renderer_) SDL_DestroyRenderer(renderer_);
     if (device_) {
         if (!SDL_WaitForGPUIdle(device_)) ReportError("Wait for GPU during cleanup");
         if (pipeline_) SDL_ReleaseGPUGraphicsPipeline(device_, pipeline_);

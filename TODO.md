@@ -1,5 +1,4 @@
-# Ideas
-
-- Try Vulkan on Raspberry Pi 5.
-- Load scene geometry from a file.
-- Experiment with transforms, depth, and textures.
+# TODOs
+- The scene is hardcoded, move outside the sdl_interface, or better yet, load from file.
+- Add camera and simple lighting.
+- Add control input (e.g. rotate camera).
